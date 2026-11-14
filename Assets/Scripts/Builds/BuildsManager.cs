@@ -2,6 +2,8 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
 using System.Runtime.Serialization.Formatters.Binary;
 using UnityEngine;
 using UnityEngine.UI;
@@ -13,6 +15,10 @@ using UnityEngine.SceneManagement;
 
 namespace Protobot.Builds {
     public class BuildsManager : MonoBehaviour {
+        public static Func<string, Task<bool>> ConfirmRepositoryOpen;
+        private bool checkingOpen;
+        private bool repositoryOpenBackedUp;
+        public void ConfirmOpenSceneWasBackedUp() { repositoryOpenBackedUp = true; }
         [SerializeField] private InputEvent saveInput;
 
         [SerializeField] private UnsavedChangesUI unsavedChangesMenu;
@@ -82,6 +88,19 @@ namespace Protobot.Builds {
         }
 
         public string GetFileName() => PathToFileName(buildPath);
+
+        public static byte[] SerializeSnapshot(BuildData snapshot) {
+            using (var stream = new MemoryStream()) {
+                new BinaryFormatter().Serialize(stream, snapshot);
+                return stream.ToArray();
+            }
+        }
+
+        public void MarkSnapshotSaved(string path, BuildData snapshot) {
+            if (!string.Equals(Path.GetFullPath(buildPath), Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase)) return;
+            savedBuildData = snapshot;
+            OnSaveBuild?.Invoke(snapshot);
+        }
         
         public static string PathToFileName(string path) => (path.Length > 0) ? path.Split('\\')[^1] : "";
         
@@ -126,14 +145,18 @@ namespace Protobot.Builds {
             Application.Quit();
         }
 
-        private bool HasUnsavedChanges() {
+        public bool HasUnsavedChanges() {
             var sceneBuild = SceneBuild.ToBuildData();
             
             if (IsNotSaved) {
                 return sceneBuild.parts.Length > 0;
             }
 
-            return !sceneBuild.CompareData(savedBuildData);
+            if (savedBuildData == null) return true;
+            // Include color/state changes and repeated instances when protecting an update.
+            var current = sceneBuild.parts.Select(p => JsonUtility.ToJson(p)).OrderBy(p => p, StringComparer.Ordinal);
+            var saved = savedBuildData.parts.Select(p => JsonUtility.ToJson(p)).OrderBy(p => p, StringComparer.Ordinal);
+            return !current.SequenceEqual(saved) || JsonUtility.ToJson(sceneBuild.camera) != JsonUtility.ToJson(savedBuildData.camera);
         }
 
         public void OpenBuild() {
@@ -167,16 +190,43 @@ namespace Protobot.Builds {
         /// </summary>
         /// <param name="newData"></param>
         /// <param name="newPath"></param>
-        public void AttemptLoad(BuildData newData, string newPath) {
+        public async void AttemptLoad(BuildData newData, string newPath) {
+            if (checkingOpen) return;
+            if (!string.IsNullOrEmpty(newPath) && ConfirmRepositoryOpen != null) {
+                checkingOpen = true;
+                try {
+                    if (!await ConfirmRepositoryOpen(newPath)) return;
+                    // An explicit update may have changed the file while the dialog was open.
+                    newData = ParsePath(newPath);
+                    if (newData == null && !File.Exists(newPath)) {
+                        newData = SceneBuild.DefaultBuild;
+                        newPath = "";
+                    }
+                }
+                catch (Exception e) { Debug.LogError("Could not open design: " + e.Message); return; }
+                finally { checkingOpen = false; }
+            }
             attemptData = newData;
             attemptPath = newPath;
 
-            if (HasUnsavedChanges()) {
+            var backedUp = repositoryOpenBackedUp;
+            repositoryOpenBackedUp = false;
+
+            if (!backedUp && HasUnsavedChanges()) {
                 unsavedChangesMenu.Enable(IsNotSaved);
             }
             else {
                 LoadAttempt();
             }
+        }
+
+        public void ReloadAfterRepositoryChange(string root) {
+            if (string.IsNullOrEmpty(buildPath)) return;
+            var prefix = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (!Path.GetFullPath(buildPath).StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return;
+            attemptPath = File.Exists(buildPath) ? buildPath : "";
+            attemptData = attemptPath == "" ? SceneBuild.DefaultBuild : ParsePath(attemptPath);
+            LoadAttempt();
         }
 
         public void SaveAndLoadAttempt() {

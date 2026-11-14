@@ -52707,7 +52707,7 @@ GameObject:
   - component: {fileID: 2140000103}
   - component: {fileID: 2140000102}
   m_Layer: 5
-  m_Name: Commit & Push Parts List
+  m_Name: Commit & Push Design
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -52912,7 +52912,7 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_text: Commit & Push Parts List
+  m_text: Commit & Push Design
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: 732e93ad980879c42afd239a752c2032, type: 2}
   m_sharedMaterial: {fileID: -6062331675715260687, guid: 732e93ad980879c42afd239a752c2032,
