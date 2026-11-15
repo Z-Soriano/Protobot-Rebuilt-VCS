@@ -42,6 +42,17 @@ namespace Protobot.Builds {
         private bool forceQuit = false;
 
         private bool IsNotSaved => buildPath == "";
+        private float nextViewSave;
+
+        private void Update() {
+            if (Time.unscaledTime < nextViewSave) return;
+            nextViewSave = Time.unscaledTime + 2f;
+            SaveLocalView();
+        }
+
+        private void SaveLocalView() { LocalDesignView.Save(buildPath, LocalDesignView.Capture()); }
+        private void OnApplicationQuit() { SaveLocalView(); }
+        private void OnApplicationPause(bool paused) { if (paused) SaveLocalView(); }
 
         private void Awake() {
             saveInput.performed += Save;
@@ -89,9 +100,14 @@ namespace Protobot.Builds {
 
         public string GetFileName() => PathToFileName(buildPath);
 
-        public static byte[] SerializeSnapshot(BuildData snapshot) {
+        public static byte[] SerializeSnapshot(BuildData snapshot, bool includeView = false) {
+            var output = new BuildData {
+                name = snapshot.name, fileName = snapshot.fileName, lastWriteTime = snapshot.lastWriteTime,
+                version = snapshot.version, parts = snapshot.parts,
+                camera = includeView ? snapshot.camera : SceneBuild.DefaultBuild.camera
+            };
             using (var stream = new MemoryStream()) {
-                new BinaryFormatter().Serialize(stream, snapshot);
+                new BinaryFormatter().Serialize(stream, output);
                 return stream.ToArray();
             }
         }
@@ -99,6 +115,7 @@ namespace Protobot.Builds {
         public void MarkSnapshotSaved(string path, BuildData snapshot) {
             if (!string.Equals(Path.GetFullPath(buildPath), Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase)) return;
             savedBuildData = snapshot;
+            LocalDesignView.Save(path, snapshot.camera);
             OnSaveBuild?.Invoke(snapshot);
         }
         
@@ -117,7 +134,10 @@ namespace Protobot.Builds {
                 var snapshot = SceneBuild.ToBuildData();
                 bool changed = savedBuildData == null ||
                     DesignComparison.Fingerprint(savedBuildData) != DesignComparison.Fingerprint(snapshot);
-                File.WriteAllBytes(path, SerializeSnapshot(snapshot));
+                // A view-only save must not dirty the tracked design file (including legacy files).
+                if (changed || choosePath || path != buildPath || !File.Exists(path))
+                    File.WriteAllBytes(path, SerializeSnapshot(snapshot));
+                LocalDesignView.Save(path, snapshot.camera);
                 buildPath = path;
                 savedBuildData = snapshot;
                 OnSaveBuild?.Invoke(snapshot);
@@ -152,10 +172,10 @@ namespace Protobot.Builds {
             }
 
             if (savedBuildData == null) return true;
-            // Include color/state changes and repeated instances when protecting an update.
+            // Protect every part detail, including small moves; camera/view is a local preference.
             var current = sceneBuild.parts.Select(p => JsonUtility.ToJson(p)).OrderBy(p => p, StringComparer.Ordinal);
             var saved = savedBuildData.parts.Select(p => JsonUtility.ToJson(p)).OrderBy(p => p, StringComparer.Ordinal);
-            return !current.SequenceEqual(saved) || JsonUtility.ToJson(sceneBuild.camera) != JsonUtility.ToJson(savedBuildData.camera);
+            return !current.SequenceEqual(saved);
         }
 
         public void OpenBuild() {
@@ -199,7 +219,12 @@ namespace Protobot.Builds {
         }
 
         public void ReloadAfterRepositoryChange(string root) {
-            if (string.IsNullOrEmpty(buildPath)) return;
+            if (string.IsNullOrEmpty(buildPath)) {
+                attemptPath = "";
+                attemptData = SceneBuild.DefaultBuild;
+                LoadAttempt();
+                return;
+            }
             var prefix = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
             if (!Path.GetFullPath(buildPath).StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return;
             attemptPath = File.Exists(buildPath) ? buildPath : "";
@@ -207,14 +232,33 @@ namespace Protobot.Builds {
             LoadAttempt();
         }
 
+        public void RestoreParkedDesign(string draftPath, string originalPath) {
+            var draft = ParsePath(draftPath);
+            if (draft == null) throw new IOException("The parked robot draft could not be opened: " + draftPath);
+            SaveLocalView();
+            buildPath = originalPath;
+            savedBuildData = File.Exists(originalPath) ? ParsePath(originalPath) : null;
+            SceneBuild.GenerateBuild(draft);
+            RepositoryFileOpened?.Invoke(buildPath);
+        }
+
         public void SaveAndLoadAttempt() {
             if (SaveCore(false, false)) LoadAttempt();
         }
 
         public void LoadAttempt() {
+            SaveLocalView();
             savedBuildData = attemptData;
             buildPath = attemptPath;
-            SceneBuild.GenerateBuild(attemptData);
+            var loadData = new BuildData {
+                name = attemptData.name, fileName = attemptData.fileName, lastWriteTime = attemptData.lastWriteTime,
+                version = attemptData.version, parts = attemptData.parts,
+                camera = LocalDesignView.Load(buildPath, attemptData.camera ?? SceneBuild.DefaultBuild.camera)
+            };
+            SceneBuild.GenerateBuild(loadData);
+            // Use the loaded scene's precision/defaults as the clean baseline. Converting
+            // a stored double to Unity's float must not look like a new user edit.
+            savedBuildData = SceneBuild.ToBuildData();
 
             // Call OutputPartsList to update the weight display after placing a part
                 PartListOutput partListOutput = FindObjectOfType<PartListOutput>();

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Collections.Generic;
 using System.Collections;
 using System.Threading.Tasks;
@@ -175,28 +176,29 @@ namespace Protobot.UI {
 
             Label(body, "REPOSITORY", 24, 20, 700, 24, 15);
             connection = Label(body, "No repository connected. Choose a local folder or clone a GitHub URL.", 24, 52, 700, 100, 15);
-            MakeButton(body, "Choose Local Repository", 24, 166, 260, () => { if (!busy) ChooseLocal(); });
+            MakeButton(body, "Open Local Repository", 24, 166, 260, () => { if (!busy) ChooseLocal(); });
             url = Field(body, "https://github.com/owner/repository", 24, 216, 516);
-            MakeButton(body, "Clone URL", 552, 216, 170, () => { if (!busy) Clone(); });
+            MakeButton(body, "Clone Repository", 552, 216, 170, () => { if (!busy) Clone(); });
             Label(body, "BRANCH", 24, 282, 700, 24, 15);
             branchField = Field(body, "Existing or new branch name", 24, 316, 360);
             branchField.onValueChanged.AddListener(_ => UpdateCommitButton());
-            MakeButton(body, "Switch", 398, 316, 150, () => { if (!busy) ChangeBranch(false); });
-            MakeButton(body, "Create New", 560, 316, 162, () => { if (!busy) ChangeBranch(true); });
-            MakeButton(body, "Choose Existing Branch", 24, 366, 260, () => { if (!busy) ChooseBranch(); });
+            MakeButton(body, "Switch Branch", 398, 316, 150, () => { if (!busy) ChangeBranch(false); });
+            MakeButton(body, "Create Branch", 560, 316, 162, () => { if (!busy) ChangeBranch(true); });
+            MakeButton(body, "Select Branch", 24, 366, 260, () => { if (!busy) ChooseBranch(); });
             branches = Label(body, "No branches loaded.", 304, 366, 418, 60, 14);
             Label(body, "COMMIT MESSAGE", 24, 458, 700, 24, 15);
             message = Field(body, "Describe your robot changes", 24, 492, 698);
             message.text = "Update robot design";
             Label(body, "Includes your .pbb and parts-list.txt. The design must be saved inside this repository.", 24, 544, 700, 52, 14);
-            MakeButton(body, "Check for Updates", 24, 616, 240, () => { if (!busy) CheckUpdates(); });
-            Label(body, "PRESERVE YOUR WORK", 24, 694, 700, 24, 15);
-            recoveryInfo = Label(body, "If teammates changed the robot, keep editing or back up your work before updating.", 24, 728, 700, 66, 14);
-            MakeButton(body, "Back Up My Version & Update", 24, 814, 350, () => { if (!busy) BackupAndUpdate(); });
-            MakeButton(body, "Keep Editing", 392, 814, 240, () => { if (!busy) window.SetActive(false); });
+            MakeButton(body, "Fetch from origin", 24, 616, 240, () => { if (!busy) CheckUpdates(); });
+            Label(body, "Fetch downloads remote updates for comparison. It does not change your working files.", 282, 616, 440, 56, 14);
+            Label(body, "PULL & RECOVERY", 24, 694, 700, 24, 15);
+            recoveryInfo = Label(body, "Fetch checks origin without changing local files. Back Up & Pull updates this branch and reloads the robot.", 24, 728, 700, 66, 14);
+            MakeButton(body, "Back Up & Pull", 24, 814, 350, () => { if (!busy) BackupAndUpdate(); });
+            MakeButton(body, "Close", 392, 814, 240, () => { if (!busy) window.SetActive(false); });
             recoveryBranch = Field(body, "New branch for my version", 24, 880, 698);
             recoveryBranch.text = "my-version-" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
-            MakeButton(body, "Save My Version to New Branch", 24, 932, 400, () => { if (!busy) SaveVersionToBranch(); });
+            MakeButton(body, "Create Branch, Commit & Push", 24, 932, 400, () => { if (!busy) SaveVersionToBranch(); });
             Label(body, "No automatic merging of robot files. Push sends all pending commits on the selected branch.", 24, 998, 700, 60, 14);
             status = Label(panel.transform, "Ready. Scroll for branch and recovery options.", 28, 590, 460, 74, 14);
             commitButton = MakeButton(panel.transform, "Commit & Push", 510, 604, 280, () => { if (!busy) CommitAndPush(); });
@@ -253,7 +255,7 @@ namespace Protobot.UI {
             }
             else if (branchField.text.Trim() != repository.Branch) {
                 title = "Activate your branch first";
-                explanation = "A branch name was entered but is not active. Use Switch or Create New before pushing. Nothing has been uploaded.";
+                explanation = "A branch name was entered but is not active. Use Switch Branch or Create Branch before pushing. Nothing has been uploaded.";
             }
             else return true;
             progress = explanation;
@@ -329,7 +331,7 @@ namespace Protobot.UI {
         }
 
         private async Task RefreshStatus(string openingPath = null) {
-            progress = "Checking GitHub for updates...";
+            progress = "Fetching from origin and comparing the robot design...";
             designCheck = null;
             try {
                 var path = openingPath ?? builds?.buildPath;
@@ -345,7 +347,7 @@ namespace Protobot.UI {
                     designCheck = await Task.Run(() => repository.CheckDesign(path, fingerprint, starting));
                     progress = designCheck.Message;
                     if (designCheck.State == DesignUpdateState.RemoteOnly)
-                        recoveryInfo.text = "Your robot has no competing edits. Back Up & Update also preserves any local camera or save-only changes.";
+                        recoveryInfo.text = "Your robot has no competing edits. Back Up & Pull also preserves any local camera or save-only changes.";
                 }
                 else progress = await Task.Run(() => repository.CheckUpdates());
             }
@@ -363,29 +365,58 @@ namespace Protobot.UI {
             });
         }
 
-        private void RequireSavedScene() {
-            if (builds != null && builds.HasUnsavedChanges())
-                throw new InvalidOperationException("Save your current design first, or use Save As to keep a separate copy. Unsaved edits were not replaced.");
+        private void ChangeBranch(bool create) {
+            if (busy) return;
+            if (create) { SwitchConfirmed(true, branchField.text.Trim()); return; }
+            if (repository == null) { progress = "Connect a repository first."; return; }
+            var name = branchField.text.Trim();
+            if (string.IsNullOrEmpty(name)) { progress = "Choose a branch first."; return; }
+            if (name == repository.Branch) { progress = "You are already on " + name + "."; return; }
+            ShowNotice("Switch branches?", "There may be changes you haven't pushed. Do you still want to switch to '" + name + "'?\n\nUncommitted files will be stashed and unsaved robot edits backed up locally. Both are restored when you return. No push.", true);
+            NoticeButton("Cancel", 28, 235, () => CloseNotice());
+            NoticeButton("Switch Branch", 282, 235, () => { CloseNotice(); SwitchConfirmed(false, name); });
         }
 
-        private async void ChangeBranch(bool create) {
+        private string DraftKey(string branch) => "GitIntegration.BranchDraft." + repository.Root + "|" + branch;
+
+        private void ParkEditorDraft() {
+            if (builds == null) return;
+            var folder = Path.Combine(Application.persistentDataPath, "BranchDrafts");
+            Directory.CreateDirectory(folder);
+            var path = Path.Combine(folder, Guid.NewGuid().ToString("N") + ".pbb");
+            var bytes = BuildsManager.SerializeSnapshot(SceneBuild.ToBuildData(), true);
+            File.WriteAllBytes(path, bytes);
+            if (!File.ReadAllBytes(path).SequenceEqual(bytes)) throw new IOException("Couldn't verify the local draft backup. Branch was not changed.");
+            var key = DraftKey(repository.Branch);
+            PlayerPrefs.SetString(key, path);
+            PlayerPrefs.SetString(key + ".OriginalPath", builds.buildPath ?? "");
+            PlayerPrefs.Save();
+        }
+
+        private async void SwitchConfirmed(bool create, string name) {
             await Execute(async () => {
                 if (repository == null) throw new InvalidOperationException("Connect a repository first.");
-                RequireSavedScene();
-                var name = branchField.text;
-                await Task.Run(() => repository.SwitchBranch(name, create));
+                ParkEditorDraft();
+                try { await Task.Run(() => repository.SwitchBranch(name, create)); }
+                catch { SetRepository(repository); throw; }
                 SetRepository(repository);
-                builds?.ReloadAfterRepositoryChange(repository.Root);
+                var key = DraftKey(repository.Branch);
+                var draft = PlayerPrefs.GetString(key, "");
+                if (!create && File.Exists(draft))
+                    builds?.RestoreParkedDesign(draft, PlayerPrefs.GetString(key + ".OriginalPath", ""));
+                else if (!create) builds?.ReloadAfterRepositoryChange(repository.Root);
+                // A new branch starts with the current live robot, including unsaved edits.
                 if (!string.IsNullOrEmpty(builds?.buildPath)) await StartingRevision(builds.buildPath, true);
                 await RefreshStatus();
+                progress = "Now working on " + repository.Branch + (create ? "." : ". Previous work is preserved in a local stash and editor draft.");
             });
         }
 
         private void UpdateBranch() {
             if (busy) return;
-            recoveryInfo.text = "Back up your local version before updating, or save it on a new branch.";
+            recoveryInfo.text = "Pull fast-forwards this branch from origin after backing up your work. It never merges conflicting robot files.";
             if (scroll != null) scroll.verticalNormalizedPosition = 0;
-            progress = "Choose Back Up My Version & Update, Keep Editing My Version, or save to a new branch.";
+            progress = "Choose Back Up & Pull, or create a branch to commit and push your version separately.";
         }
 
         private async void BackupAndUpdate() {
@@ -398,9 +429,9 @@ namespace Protobot.UI {
                 if (targetBranch != repository.Branch)
                     throw new InvalidOperationException("Activate the entered branch before updating.");
                 var livePath = builds?.buildPath;
-                var live = builds == null ? null : BuildsManager.SerializeSnapshot(SceneBuild.ToBuildData());
+                var live = builds == null ? null : BuildsManager.SerializeSnapshot(SceneBuild.ToBuildData(), true);
                 var backup = await Task.Run(() => repository.BackupAndUpdate(path, live, livePath, folders[0], value => progress = value));
-                progress = "Updated successfully. Your previous versions are backed up at:\n" + backup;
+                progress = "Pull completed. Your previous work is backed up at:\n" + backup;
                 recoveryInfo.text = "Backup: " + backup;
                 builds?.ReloadAfterRepositoryChange(repository.Root);
                 await StartingRevision(path, true);
@@ -444,7 +475,7 @@ namespace Protobot.UI {
         }
 
         private void ChooseBranch() {
-            if (repository == null || branchNames.Length == 0) { progress = "Connect a repository and check for updates first."; return; }
+            if (repository == null || branchNames.Length == 0) { progress = "Open a repository and fetch from origin first."; return; }
             ShowNotice("Choose a branch", "", true);
             var panel = notice.transform.GetChild(0).GetChild(0);
             var viewport = Box("Branch list", panel, new Color(.14f, .17f, .22f));
@@ -480,7 +511,7 @@ namespace Protobot.UI {
             while (directory != null && !Directory.Exists(Path.Combine(directory.FullName, ".git")) && !File.Exists(Path.Combine(directory.FullName, ".git"))) directory = directory.Parent;
             if (directory == null) return;
             if (font == null) font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            ShowNotice("Checking for updates", Path.GetFileName(path) + " is open. Checking its GitHub repository...", false);
+            ShowNotice("Fetching from origin", Path.GetFileName(path) + " is open. Checking its GitHub repository...", false);
             try {
                 var selected = new PartsListGitRepository();
                 var fingerprint = DesignComparison.Fingerprint(File.ReadAllBytes(path));
@@ -493,9 +524,9 @@ namespace Protobot.UI {
                 if (notice != null) Destroy(notice);
                 if (window != null) SetRepository(selected);
                 if (result.Warn) {
-                    ShowNotice("Design update", Path.GetFileName(path) + " is open.\n\n" + result.Message, true);
-                    NoticeButton("Keep This Version", 28, 235, () => CloseNotice());
-                    NoticeButton("Review Update Options", 282, 235, () => { CloseNotice(); Open(); UpdateBranch(); });
+                    ShowNotice("Remote design changes", Path.GetFileName(path) + " is open.\n\n" + result.Message, true);
+                    NoticeButton("Continue Without Pulling", 28, 235, () => CloseNotice());
+                    NoticeButton("Review Pull & Backup", 282, 235, () => { CloseNotice(); Open(); UpdateBranch(); });
                 }
             }
             catch (Exception e) {
@@ -605,7 +636,12 @@ namespace Protobot.UI {
             if (commitButton == null) return;
             commitButton.interactable = !busy && GitPreferences.Enabled;
             var caption = commitButton.GetComponentInChildren<Text>();
-            if (caption != null) caption.text = !CurrentRepositorySelected ? "Set Up Repository" : branchField.text.Trim() != repository.Branch ? "Activate Branch" : "Push to " + repository.Branch;
+            if (caption != null) {
+                caption.resizeTextForBestFit = true;
+                caption.resizeTextMinSize = 10;
+                caption.resizeTextMaxSize = 15;
+                caption.text = !CurrentRepositorySelected ? "Set Up Repository" : branchField.text.Trim() != repository.Branch ? "Activate Branch" : "Commit & Push to " + repository.Branch;
+            }
         }
 
         private Image Box(string name, Transform parent, Color color) {

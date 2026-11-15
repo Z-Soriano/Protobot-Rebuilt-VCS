@@ -53,8 +53,8 @@ namespace Protobot.UI {
         public static DesignUpdateResult Compare(string baseline, string local, string remote) {
             if (local == remote) return Result(DesignUpdateState.Same, "Your robot matches the design on GitHub.");
             if (remote == baseline) return Result(DesignUpdateState.LocalOnly, "Only your robot design has changed. Your edits are preserved.");
-            if (local == baseline) return Result(DesignUpdateState.RemoteOnly, "The robot design on GitHub changed since your starting version. Update & Reload, or Edit Anyway.");
-            return Result(DesignUpdateState.BothChanged, "You and a teammate changed this robot since your shared starting version. Save a separate copy or use a new branch; combining the designs needs manual work.");
+            if (local == baseline) return Result(DesignUpdateState.RemoteOnly, "The robot design on GitHub changed since your starting version. Back Up & Pull, or continue without pulling.");
+            return Result(DesignUpdateState.BothChanged, "You and a teammate changed this robot since your shared starting version. Back up and pull, or create a branch to commit and push your version; combining the designs needs manual work.");
         }
 
         public static DesignUpdateResult Result(DesignUpdateState state, string message) => new DesignUpdateResult { State = state, Message = message };

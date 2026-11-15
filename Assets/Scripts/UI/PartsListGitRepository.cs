@@ -73,17 +73,43 @@ namespace Protobot.UI {
             await Git("check-ref-format", "--branch", name);
             if (create) await Git("switch", "-c", name);
             else {
-                await RequireClean();
+                await RefreshConnection();
+                if (name == Branch) return;
                 var locals = (await Git("for-each-ref", "--format=%(refname:short)", "refs/heads/")).Split('\n');
-                if (locals.Any(n => n.Trim() == name)) await Git("switch", name);
-                else await Git("switch", "--track", "-c", name, "refs/remotes/origin/" + name);
+                bool local = locals.Any(n => n.Trim() == name);
+                if (!local) await Git("rev-parse", "--verify", "refs/remotes/origin/" + name);
+                var original = Branch;
+                if (!string.IsNullOrWhiteSpace(await Git("status", "--porcelain", "--untracked-files=all"))) {
+                    await Git("stash", "push", "--include-untracked", "-m", "Protobot parked work on " + original);
+                    var id = (await Git("rev-parse", "refs/stash")).Trim();
+                    await Git("update-ref", "refs/protobot/parked/" + original, id);
+                }
+                try {
+                    if (local) await Git("switch", name);
+                    else await Git("switch", "--track", "-c", name, "refs/remotes/origin/" + name);
+                }
+                catch {
+                    await RestoreParkedWork(original);
+                    throw;
+                }
+                // Update the destination immediately, even if restoring parked work fails.
+                await RefreshConnection(true);
+                await RestoreParkedWork(name);
             }
             await RefreshConnection(true);
         }
 
-        private async Task RequireClean() {
-            if (!string.IsNullOrWhiteSpace(await Git("status", "--porcelain", "--untracked-files=all")))
-                throw new InvalidOperationException("Save and commit your work or move untracked files outside this repository before switching branches or updating. Nothing was replaced.");
+        private async Task RestoreParkedWork(string branch) {
+            var reference = "refs/protobot/parked/" + branch;
+            var matches = (await Git("for-each-ref", "--format=%(refname)", reference)).Split('\n');
+            if (!matches.Any(line => line.Trim() == reference)) return;
+            try {
+                await Git("stash", "apply", "--index", reference);
+                await Git("update-ref", "-d", reference);
+            }
+            catch (Exception e) {
+                throw new InvalidOperationException("Branch switched, but parked work could not be restored automatically. It is still preserved locally at " + reference + ".\n" + e.Message, e);
+            }
         }
 
         public async Task<string> CheckUpdates() {
@@ -99,7 +125,7 @@ namespace Protobot.UI {
             var behind = int.Parse(counts[1]);
             if (behind == 0) return ahead == 0 ? "Up to date with GitHub." : "Your branch has local commits to push.";
             return ahead == 0
-                ? "GitHub has " + behind + " newer commit(s). Update before editing, or choose Edit Anyway."
+                ? "GitHub has " + behind + " newer commit(s). Pull before editing, or continue without pulling."
                 : "Both your branch and GitHub have new commits. They have diverged; synchronize manually or save a separate copy.";
         }
 
@@ -125,10 +151,10 @@ namespace Protobot.UI {
             var remote = (await Git("rev-parse", "refs/remotes/origin/" + Branch)).Trim();
             var head = (await Git("rev-parse", "HEAD")).Trim();
             if ((await Git("merge-base", head, remote)).Trim() != head)
-                throw new InvalidOperationException("Your branch has commits that GitHub does not include. Use Save My Version to New Branch first; this update will not remove local commits.");
+                throw new InvalidOperationException("Your branch has commits that GitHub does not include. Use Create Branch, Commit & Push first; this update will not remove local commits.");
             // Preserve staged work rather than silently changing the user's index.
             if (!string.IsNullOrWhiteSpace(await Git("diff", "--cached", "--name-only")))
-                throw new InvalidOperationException("There are staged changes. Use Save My Version to New Branch to preserve your design; an update cannot replace staged work.");
+                throw new InvalidOperationException("There are staged changes. Use Create Branch, Commit & Push to preserve your design; an update cannot replace staged work.");
             var backup = Path.Combine(parent, "Protobot-backup-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 8));
             Directory.CreateDirectory(backup);
             progress("Backing up local work to " + backup);
@@ -258,7 +284,7 @@ namespace Protobot.UI {
             }
             var updateStatus = await CheckUpdates();
             if (updateStatus.Contains("newer commit") || updateStatus.Contains("diverged"))
-                throw new InvalidOperationException("The design check passed, but the branch history still needs synchronization (possibly changes to other files). Update first, or create a new branch. No commit or push was attempted.");
+                throw new InvalidOperationException("The design check passed, but the branch history still needs synchronization (possibly changes to other files). Pull first, or create a new branch. No commit or push was attempted.");
             // Refuse in-progress operations before writing the snapshot.
             foreach (var marker in new[] { "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply" }) {
                 var gitPath = (await Git("rev-parse", "--git-path", marker)).Trim();
