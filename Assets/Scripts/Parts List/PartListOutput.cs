@@ -1,14 +1,11 @@
-using System.Collections;
+using System;
 using System.Collections.Generic;
-using System.Linq;
-using UnityEngine;
+using System.Globalization;
 using System.IO;
-using SFB;
-using Protobot.Builds.Windows;
-using Protobot.Builds;
-using DG.Tweening.Plugins.Core.PathCore;
-using System.Security.Cryptography;
+using System.Linq;
 using Parts_List;
+using SFB;
+using UnityEngine;
 
 public class PartListOutput : MonoBehaviour
 {
@@ -34,7 +31,9 @@ public class PartListOutput : MonoBehaviour
         partCount = new Dictionary<string, int>();
         totalWeight = 0f;
 
-        foreach (PartName part in parts)
+        // Keep accumulation and output stable so identical designs produce identical files.
+        foreach (PartName part in parts.OrderBy(p => p.name, StringComparer.Ordinal)
+                                       .ThenBy(p => p.weightInGrams))
         {
             if (partCount.ContainsKey(part.name))
             {
@@ -58,14 +57,15 @@ public class PartListOutput : MonoBehaviour
         private void BuildPartsListString()
         {
             // Sorts the dictionary in descending order based on the amount of the part
-            var sortedDictLinq = from entry in partCount orderby entry.Value descending select entry;
+            var sortedDictLinq = partCount.OrderByDescending(entry => entry.Value)
+                                         .ThenBy(entry => entry.Key, StringComparer.Ordinal);
             var sortedDict = sortedDictLinq.ToDictionary(pair => pair.Key, pair => pair.Value);
 
             // Edits the output string in order to add a disclaimer about certain things 
             partsList = "======DISCLAIMER======\nHS is an abbreviation of High Strength\nNumbers inside of () are used to represent the hole count, for example C-Channel 1x2x1 (25) means the C-Channel is 25 holes long\n======================\n";
         
             // Add total weight to the output
-            partsList += $"\nTotal Estimated Weight: {totalWeight} lbs\n\n======PARTS LIST======\n"; // Display total weight
+            partsList += $"\nTotal Estimated Weight: {totalWeight.ToString(CultureInfo.InvariantCulture)} lbs\n\n======PARTS LIST======\n";
 
             // Makes the dictionary into a string that is used as the input for txt file output 
             foreach (string key in sortedDict.Keys)
@@ -75,7 +75,7 @@ public class PartListOutput : MonoBehaviour
                 if (part.GetWeight() != 0)
                 {
                     float partWeight = part.GetWeight(); // Get the weight in pounds
-                    partsList += $"{key} x{sortedDict[key]} ({(partWeight * sortedDict[key]):F6} lbs)\n"; // Include total weight for this part type
+                    partsList += $"{key} x{sortedDict[key]} ({(partWeight * sortedDict[key]).ToString("F6", CultureInfo.InvariantCulture)} lbs)\n";
                 }
                 else
                 {
@@ -91,8 +91,15 @@ public class PartListOutput : MonoBehaviour
 
             if (!string.IsNullOrEmpty(fileLocation))
             {
-                File.WriteAllText(fileLocation, partsList);
+                File.WriteAllText(fileLocation, GetPartsListText());
             }
+        }
+
+        // Both file export and version-control snapshots use the current scene.
+        public string GetPartsListText()
+        {
+            CalculatePartsList();
+            return partsList;
         }
 
         public float GetTotalWeight()
