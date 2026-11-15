@@ -15,10 +15,9 @@ using UnityEngine.SceneManagement;
 
 namespace Protobot.Builds {
     public class BuildsManager : MonoBehaviour {
-        public static Func<string, Task<bool>> ConfirmRepositoryOpen;
-        private bool checkingOpen;
-        private bool repositoryOpenBackedUp;
-        public void ConfirmOpenSceneWasBackedUp() { repositoryOpenBackedUp = true; }
+        public static event Action<string> RepositoryFileOpened;
+        public static event Action<string> SavedForGit;
+        public static Func<bool> IsGitSaveChoicePending;
         [SerializeField] private InputEvent saveInput;
 
         [SerializeField] private UnsavedChangesUI unsavedChangesMenu;
@@ -57,6 +56,7 @@ namespace Protobot.Builds {
             
 
             Application.wantsToQuit += () => {
+                if (IsGitSaveChoicePending?.Invoke() == true) return false;
                 avoidingQuit = HasUnsavedChanges() && !forceQuit;
                 if (avoidingQuit) {
                     unsavedChangesMenu.Enable(IsNotSaved);
@@ -104,36 +104,35 @@ namespace Protobot.Builds {
         
         public static string PathToFileName(string path) => (path.Length > 0) ? path.Split('\\')[^1] : "";
         
-        public void Save() {
-            if (buildPath == "") {
-                SaveAs();
-                return;
+        public void Save() { SaveCore(true, false); }
+        public void SaveAs() { SaveCore(true, true); }
+
+        private bool SaveCore(bool offerGit, bool choosePath) {
+            try {
+                var path = buildPath;
+                if (choosePath || string.IsNullOrEmpty(path)) {
+                    path = StandaloneFileBrowser.SaveFilePanel("Save Build File", "", "", "pbb");
+                    if (string.IsNullOrEmpty(path)) return false;
+                }
+                var snapshot = SceneBuild.ToBuildData();
+                bool changed = savedBuildData == null ||
+                    DesignComparison.Fingerprint(savedBuildData) != DesignComparison.Fingerprint(snapshot);
+                File.WriteAllBytes(path, SerializeSnapshot(snapshot));
+                buildPath = path;
+                savedBuildData = snapshot;
+                OnSaveBuild?.Invoke(snapshot);
+                if (offerGit && changed) SavedForGit?.Invoke(path);
+                return true;
             }
-
-            var sceneBuildData = SceneBuild.ToBuildData();
-            
-            BinaryFormatter bf = new BinaryFormatter();
-
-            FileStream file = File.Create(buildPath);
-            bf.Serialize(file, sceneBuildData);
-            file.Close();
-
-            savedBuildData = sceneBuildData;
-            OnSaveBuild?.Invoke(sceneBuildData);
-        }
-
-        public void SaveAs() {
-            var path = StandaloneFileBrowser.SaveFilePanel("Save Build File", "", "", "pbb");
-
-            if (path == "") return;
-
-            buildPath = path;
-            Save();
+            catch (Exception e) {
+                Debug.LogError("Could not save design: " + e.Message);
+                return false;
+            }
         }
 
         public void SaveAndQuit() {
-            Save();
-            Quit();
+            if (SaveCore(false, false)) Quit();
+            else avoidingQuit = false;
         }
 
         public void Quit() {
@@ -160,6 +159,7 @@ namespace Protobot.Builds {
         }
 
         public void OpenBuild() {
+            if (IsGitSaveChoicePending?.Invoke() == true) return;
             var paths = StandaloneFileBrowser.OpenFilePanel("Open Build File", "", "pbb", false);
 
             if (paths.Length == 0 || paths[0] == "") return;
@@ -190,34 +190,12 @@ namespace Protobot.Builds {
         /// </summary>
         /// <param name="newData"></param>
         /// <param name="newPath"></param>
-        public async void AttemptLoad(BuildData newData, string newPath) {
-            if (checkingOpen) return;
-            if (!string.IsNullOrEmpty(newPath) && ConfirmRepositoryOpen != null) {
-                checkingOpen = true;
-                try {
-                    if (!await ConfirmRepositoryOpen(newPath)) return;
-                    // An explicit update may have changed the file while the dialog was open.
-                    newData = ParsePath(newPath);
-                    if (newData == null && !File.Exists(newPath)) {
-                        newData = SceneBuild.DefaultBuild;
-                        newPath = "";
-                    }
-                }
-                catch (Exception e) { Debug.LogError("Could not open design: " + e.Message); return; }
-                finally { checkingOpen = false; }
-            }
+        public void AttemptLoad(BuildData newData, string newPath) {
+            if (IsGitSaveChoicePending?.Invoke() == true) return;
             attemptData = newData;
             attemptPath = newPath;
-
-            var backedUp = repositoryOpenBackedUp;
-            repositoryOpenBackedUp = false;
-
-            if (!backedUp && HasUnsavedChanges()) {
-                unsavedChangesMenu.Enable(IsNotSaved);
-            }
-            else {
-                LoadAttempt();
-            }
+            if (HasUnsavedChanges()) unsavedChangesMenu.Enable(IsNotSaved);
+            else LoadAttempt();
         }
 
         public void ReloadAfterRepositoryChange(string root) {
@@ -230,8 +208,7 @@ namespace Protobot.Builds {
         }
 
         public void SaveAndLoadAttempt() {
-            Save();
-            LoadAttempt();
+            if (SaveCore(false, false)) LoadAttempt();
         }
 
         public void LoadAttempt() {
@@ -244,6 +221,7 @@ namespace Protobot.Builds {
                 if (partListOutput != null) {
                     partListOutput.CalculatePartsList(); // Recalculate and notify weight update
                 }
+            RepositoryFileOpened?.Invoke(buildPath);
         }
 
         /// <summary>
